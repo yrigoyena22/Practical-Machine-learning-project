@@ -1,0 +1,204 @@
+---
+title: "Practical machine learning project-AY"
+author: "Andres Yrigoyen"
+date: "12/17/2020"
+output: html_document
+---
+
+# Peer-graded Assignment of Practical machine learning course: Prediction Assignment Writeup
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset)
+
+## Project Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
+
+
+## Project Objective
+
+The goal of this project is to predict the manner in which people did the exercise. This is the “classe” variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.
+
+# Preproccessing the data set. Training and testing data
+
+## Loading the required library
+
+```{r library required, echo = TRUE, warning=FALSE, message=FALSE}
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(RColorBrewer)
+library(rattle)
+library(e1071)
+library(randomForest)
+library(ggplot2)
+library(plyr)
+library(dplyr)
+set.seed(1)
+```
+
+## Loading the training and testing data
+
+Files are already located in the local data base. The files are read into the  memory of R Studio. There are various indicators of missing data (for example, “NA”, “#DIV/0!” and “”). Let group them is a set named NA so they can be processed.
+
+```{r reading the data files, echo = TRUE}
+train.data.raw <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+test.data.raw <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+```
+
+
+# Exploratory Data Analysis
+
+Let’s understand the number of rows and columns contained in the raw training 
+and testing data.
+
+```{r dimensions of raw testting and training data, echo = TRUE}
+dim(train.data.raw)
+dim(test.data.raw)
+```
+The training raw data has 19,622 rows and 160 columns.
+The testing raw data has 20 rows and 160 columns.
+In order to know the number of observations per group in the "classe" variable in the training set we can generate a bar plot.
+
+```{r observations in each classe, echo = TRUE}
+
+groupByClasse <- train.data.raw %>% group_by(classe) %>% summarize(counts = n())
+g <- ggplot(groupByClasse, aes(x = classe, y = counts, fill=classe)) + geom_bar(stat = "identity")
+g <- g + geom_bar(stat = "identity")
+g <- g + ggtitle("Figure-1. Total number of observations for each groups")
+g <- g + xlab("Groups")
+g <- g + ylab("Counts")
+plot(g)
+```
+
+
+Figure-1 shows that the data set is skewed towards the left (group A). 
+Figure-1 also shows that groups B and E have similar amount of data. 
+Same observation apply for groups c and D.
+ 
+
+## Data cleaning
+
+In this section,columns that are not deeded for modeling predictions and columns that contain NAs values are removed. For instance, columns names of the training data,  we decided to clean the some columns such as:  "user_name", "X",raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp".
+
+```{r cleaning data, echo = TRUE}
+## Removing the first 7 columns as they're unnecessary for predicting
+clean_train.data <- train.data.raw[,8:length(colnames(train.data.raw))]
+clean_test.data <- test.data.raw[,8:length(colnames(test.data.raw))]
+
+# Removing colums with NAs
+clean_train.data <- clean_train.data[, colSums(is.na(clean_train.data)) == 0] 
+clean_test.data <- clean_test.data[, colSums(is.na(clean_test.data)) == 0] 
+
+# Checking for near zero variance predictors and eliminate them if necessary
+nzv <- nearZeroVar(clean_train.data,saveMetrics=TRUE)
+zero.var.ind <- sum(nzv$nzv)
+
+if ((zero.var.ind>0)) {
+        clean_train.data <- clean_train.data[,nzv$nzv==FALSE]
+}
+
+```
+
+Dimension of new clean data set
+
+```{r dimensions of new clean testting and training data, echo = TRUE}
+dim(clean_train.data)
+dim(clean_test.data)
+```
+Finally, we can say that after the cleaning process the numbers columns 53 for the train data and  test data.
+
+## Splitting the data set into training and testing data from training data frame
+
+
+The training data will be treated into two sets. This first is a training set with 70% of the data which is used to train the model. The second set of data will be use for validation to investigate model performance.
+
+```{r splitting  data, echo = TRUE}
+
+in.training.set <- createDataPartition(clean_train.data$classe, p=0.70, list=F)
+traindataaftersplit <- clean_train.data[in.training.set, ]
+final.validated.data <- clean_train.data[-in.training.set, ]
+
+```
+
+## Model Development
+
+## Training the model using Random Forest
+
+The training data-set is used to fit a Random Forest model. RandomForest implements Breiman's random forest algorithm for classification and regression. It can also be used in unsupervised mode for assessing proximities among data points. 
+
+The random forest algorithm works by aggregating the predictions made by multiple decision trees of varying depth. Every decision tree in the forest is trained on a subset of the dataset called the bootstrapped dataset. This function automatically selects variables and it is robust to correlated covariates & outliers in general. 5-fold cross validation is used when applying the algorithm. 
+In 5-fold cross-validation, the original sample is randomly partitioned into 5 equal sized sub-samples. a single sample is retained for validation and the other sub-samples are used as training data. The process is performed 5 times and results from the folds are averaged.
+
+```{r training the model, echo = TRUE}
+
+TrainingModel <- trainControl(method="cv", 5)
+rf.model <- train(classe ~ ., data=traindataaftersplit, method="rf",
+                 trControl=TrainingModel, ntree=251)
+rf.model
+```
+
+## Model performance
+
+The fitted model using the training data is tested against the validation data. Predicted values for the validation data are compared to the actual values. This process estimates the accuracy and overall out-of-sample error.
+A confusion matrix is a table that is often used to describe the performance of a classification model (or "classifier") on a set of test data for which the true values are known.The functions requires that the factors have exactly the same levels.
+
+```{r model performance, echo = TRUE}
+
+rf.predict <- predict(rf.model, final.validated.data)
+levels(rf.predict)
+class(rf.predict)
+levels(final.validated.data$classe)
+class(final.validated.data$classe)
+final.validated.data$classe <- as.factor(final.validated.data$classe)  
+class(final.validated.data$classe)
+confusionMatrix(final.validated.data$classe, rf.predict)
+
+```
+Model Accuracy
+
+```{r model accuracy, echo = TRUE}
+
+accuracy <- postResample(rf.predict, final.validated.data$classe)
+accuracy
+acc.out <- accuracy[1]
+acc.out
+overall.ose <- 
+        1 - as.numeric(confusionMatrix(final.validated.data$classe, rf.predict)
+                       $overall[1])
+overall.ose
+```
+## Model Results
+
+The accuracy of this model is  0.992353 and the Overall Out-of-Sample error (OSE) is 0.007646
+
+## Run the model for predictions
+
+This part corresponds to Course Project Prediction Quiz Portion
+The model is applied to the test data set to generate the prediction results.
+
+```{r model predictions, echo = TRUE}
+
+model.results <- predict(rf.model, 
+                   clean_test.data[, -length(names(clean_test.data))])
+model.results
+```
+## Appendix - Decision Tree Visualization
+
+```{r decision tree, echo = TRUE}
+DecisiontreeModel <- rpart(classe ~ ., data=traindataaftersplit, method="class")
+library(rpart.plot)
+rpart.plot(DecisiontreeModel)
+fancyRpartPlot(DecisiontreeModel)
+```
+
+
